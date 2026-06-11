@@ -363,10 +363,10 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     logger.info(f"Berhasil mengambil {len(initial_docs)} dokumen unik dari Hybrid Search.")
     
     # ==========================================
-    # TAHAP 4: RE-RANKING (Cross-Encoder)
+    # TAHAP 4: RE-RANKING (Cohere Rerank API)
     # ==========================================
     final_k = 5
-    logger.info("Tahap 3: Menerapkan metode Re-ranking menggunakan MS Marco Cross-Encoder...")
+    logger.info("Tahap 3: Menerapkan metode Re-ranking menggunakan Cohere Rerank API...")
     reranked_docs = rerank_documents(query=query, documents=initial_docs, top_k=final_k)
     
     # Ekstrak konteks dan format sumber dokumen dari hasil re-ranking

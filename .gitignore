@@ -28,6 +28,8 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 
+eval/results/*
+
 # Logs
 logs/
 *.log
