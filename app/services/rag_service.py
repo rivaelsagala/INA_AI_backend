@@ -96,7 +96,7 @@ class HuggingFaceService:
                 2: Qwen/Qwen2.5-7B-Instruct (HuggingFace)
                 3: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B (HuggingFace)
                 4: model_merged_legal (Fine-tuned)
-                5: openai/gpt-4.1-mini (Maia Router)
+                5: openai/gpt-4o-mini (Maia Router)
             **kwargs: Additional parameters like temperature, max_tokens
         """
         try:
