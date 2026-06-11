@@ -11,7 +11,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 
-# from app.services.reranker_service import rerank_documents  # DISABLED: Belum digunakan
+from app.services.reranker_service import rerank_documents
 
 # Load environment variables dari file .env
 load_dotenv()
@@ -363,12 +363,11 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     logger.info(f"Berhasil mengambil {len(initial_docs)} dokumen unik dari Hybrid Search.")
     
     # ==========================================
-    # TAHAP 4: RE-RANKING (DISABLED - langsung ambil top-k)
+    # TAHAP 4: RE-RANKING (Cross-Encoder)
     # ==========================================
     final_k = 5
-    # logger.info("Tahap 3: Menerapkan metode Re-ranking menggunakan MS Marco Cross-Encoder...")
-    # reranked_docs = rerank_documents(query=query, documents=initial_docs, top_k=final_k)
-    reranked_docs = initial_docs[:final_k]  # Sementara tanpa re-ranking
+    logger.info("Tahap 3: Menerapkan metode Re-ranking menggunakan MS Marco Cross-Encoder...")
+    reranked_docs = rerank_documents(query=query, documents=initial_docs, top_k=final_k)
     
     # Ekstrak konteks dan format sumber dokumen dari hasil re-ranking
     context_texts = []
