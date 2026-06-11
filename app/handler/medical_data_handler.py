@@ -7,7 +7,7 @@ Handler untuk meng-ingest data kesehatan dari CSV/PDF ke vector database.
 import os
 from flask import request, jsonify
 from loguru import logger
-from app.usacase.embedding_use_case import ingest_medical_file_to_vector_db
+from app.usecases.embedding_use_case import ingest_medical_file_to_vector_db
 
 def handle_ingest_medical_data():
     """
