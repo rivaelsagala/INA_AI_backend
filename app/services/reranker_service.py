@@ -19,7 +19,7 @@ except Exception as e:
     logger.error(f"Gagal memuat Cohere Client: {e}")
     cohere_client = None
 
-def rerank_documents(query: str, documents: list, top_k: int = 5) -> list:
+def rerank_documents(query: str, documents: list, top_k: int = 5) -> tuple:
     """
     Melakukan re-ranking pada dokumen menggunakan Cohere Rerank API (v2).
     Sangat cocok untuk domain Medis agar konteks logis antara kueri pasien 
@@ -29,13 +29,17 @@ def rerank_documents(query: str, documents: list, top_k: int = 5) -> list:
         query: Pertanyaan dari user
         documents: List objek Document (kandidat awal dari Hybrid Search)
         top_k: Jumlah final dokumen yang akan diambil setelah diurutkan ulang
+    
+    Returns:
+        Tuple of (reranked_docs, relevance_scores):
+        - reranked_docs: List dokumen yang sudah diurutkan ulang
+        - relevance_scores: List skor relevansi dari Cohere (urut desc)
     """
     if not cohere_client or not documents:
         logger.warning("Cohere Client tidak tersedia atau dokumen kosong. Mengembalikan dokumen asli.")
-        return documents[:top_k]
+        return documents[:top_k], []
     
     # 1. Ekstrak teks dari Langchain Document objects
-    # Cohere membutuhkan input berupa list of strings
     docs_texts = [doc.page_content for doc in documents]
     
     logger.info(f"Melakukan re-ranking dengan Cohere untuk {len(documents)} dokumen kandidat medis...")
@@ -53,10 +57,10 @@ def rerank_documents(query: str, documents: list, top_k: int = 5) -> list:
         )
         
         reranked_docs = []
+        relevance_scores = []
         logger.debug(f"--- Top {actual_top_k} Hasil Re-ranking Medis (Cohere) ---")
         
-        # 3. Petakan kembali indeks hasil Cohere ke objek Document asli
-        # response.results sudah otomatis diurutkan Cohere dari skor tertinggi
+        # 3.indeks hasil Cohere ke objek Document asli
         for rank, result in enumerate(response.results):
             original_idx = result.index
             score = result.relevance_score
@@ -69,10 +73,10 @@ def rerank_documents(query: str, documents: list, top_k: int = 5) -> list:
             logger.debug(f"Rank {rank+1} | Score: {score:.4f} | Source: {source} (Hal. {page})")
             
             reranked_docs.append(original_doc)
+            relevance_scores.append(score)
             
-        return reranked_docs
+        return reranked_docs, relevance_scores
         
     except Exception as e:
         logger.error(f"Error saat memanggil Cohere Rerank API: {e}")
-        # Fallback: jika API error (misal limit rate), kembalikan dokumen dari hybrid search asli
-        return documents[:top_k]
+        return documents[:top_k], []

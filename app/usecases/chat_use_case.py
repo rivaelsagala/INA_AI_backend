@@ -119,9 +119,13 @@ def chat_with_history(session_id: int, user_id: int, user_question: str, model_i
             "message": "Jawaban berhasil diproses",
             "answer": rag_result["answer"],
             "sources": rag_result.get("sources", []),
+            "citations": rag_result.get("citations", []),
             "model_used": rag_result.get("model_used", "Unknown Model"),
             "guardrail_triggered": False,
             "pii_detected": pii_detected,
+            "cost": rag_result.get("cost", {}),
+            "confidence": rag_result.get("confidence", {}),
+            "confidence_disclaimer": rag_result.get("confidence_disclaimer"),
         }
         
         if pii_detected:

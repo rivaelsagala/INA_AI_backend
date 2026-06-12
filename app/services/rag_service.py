@@ -12,13 +12,12 @@ from langchain.retrievers import EnsembleRetriever
 from langchain_core.documents import Document
 
 from app.services.reranker_service import rerank_documents
+from app.services.cost_service import calculate_query_cost
+from app.services.confidence_service import calculate_confidence, format_confidence_disclaimer
 
 # Load environment variables dari file .env
 load_dotenv()
 
-# ==========================================
-# 1. INISIALISASI DATABASE & EMBEDDINGS
-# ==========================================
 supabase_url = os.getenv("SUPABASE_URL", "")
 supabase_key = os.getenv("SUPABASE_KEY", "")
 
@@ -30,9 +29,6 @@ embeddings = OpenAIEmbeddings(
     base_url=os.getenv("OPENAI_BASE_URL", "")
 )
 
-# ==========================================
-# 2. DAFTAR MODEL YANG TERSEDIA
-# ==========================================
 AVAILABLE_MODELS = {
     1: {"name": "meta-llama/Llama-3.1-8B-Instruct", "type": "original"},
     2: {"name": "Qwen/Qwen2.5-7B-Instruct", "type": "original"},
@@ -40,9 +36,6 @@ AVAILABLE_MODELS = {
     4: {"name": "openai/gpt-4o-mini", "type": "openai"},
 }
 
-# ==========================================
-# 3. HUGGINGFACE SERVICE (LLM Multi-Model Support)
-# ==========================================
 class HuggingFaceService:
     """Service untuk berinteraksi dengan HuggingFace Router API dan Fine-tuned Model"""
     
@@ -52,8 +45,6 @@ class HuggingFaceService:
         self.api_url = os.getenv("HF_BASE_URL", "")
         self.token = os.getenv("HF_TOKEN", "")
         
-        # Fine-tuned Model API (B200 Server)
-        self.finetuned_api_url = os.getenv("FINETUNED_API_URL", "")
         
         # Common settings
         self.temperature = 0.0
@@ -63,27 +54,6 @@ class HuggingFaceService:
             "Authorization": f"Bearer {self.token}",
             "Content-Type": "application/json"
         }
-    
-    def load_finetuned_model(self) -> bool:
-        """Load model fine-tuned ke memori server B200"""
-        try:
-            load_url = f"{self.finetuned_api_url}/load-model"
-            logger.info(f"Loading fine-tuned model via: {load_url}")
-            
-            response = requests.post(load_url, timeout=900)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get("status") == "success":
-                logger.info(f"✅ Fine-tuned model loaded: {result.get('message')}")
-                return True
-            else:
-                logger.warning(f"⚠️ Model load response: {result}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Error loading fine-tuned model: {str(e)}")
-            return False
     
     def query(self, messages: List[Dict[str, str]], model_id: int = 1, **kwargs) -> Optional[Dict[str, Any]]:
         """
@@ -104,61 +74,7 @@ class HuggingFaceService:
             model_info = AVAILABLE_MODELS.get(model_id, AVAILABLE_MODELS[1])
             model_type = model_info.get("type", "original")
             
-            if model_type == "fine-tuned":
-                # ============================================
-                # FINE-TUNED MODEL API (B200 Server)
-                # ============================================
-                api_url = f"{self.finetuned_api_url}/chat"
-                logger.debug(f"FINE-TUNED model: {model_info['name']}")
-                
-                # Extract system_prompt DAN user message dari messages array
-                system_content = ""
-                user_message = ""
-                for msg in messages:
-                    if msg.get("role") == "system":
-                        system_content = msg.get("content", "")
-                    elif msg.get("role") == "user":
-                        user_message = msg.get("content", "")
-                
-                if not system_content:
-                    logger.warning("system_prompt kosong untuk fine-tuned model! Konteks RAG tidak akan digunakan.")
-                
-                payload = {
-                    "system_prompt": system_content,
-                    "message": user_message
-                }
-                
-                logger.debug(f"Sending request to B200: {api_url}")
-                logger.debug(f"Fine-tuned payload — system_prompt length: {len(system_content)} chars, message: {user_message[:80]}...")
-                
-                response = requests.post(
-                    api_url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload,
-                    timeout=300
-                )
-                
-                response.raise_for_status()
-                result = response.json()
-                
-                # Standardisasi format response agar konsisten
-                standardized_result = {
-                    "choices": [
-                        {
-                            "message": {
-                                "content": result.get("answer", "")
-                            }
-                        }
-                    ]
-                }
-                
-                logger.info(f"Fine-tuned Model API response successful")
-                return standardized_result
-
-            elif model_type == "openai":
-                # ============================================
-                # MAIA ROUTER (OpenAI Compatible API)
-                # ============================================
+            if model_type == "openai":
                 base_url = os.getenv("OPENAI_BASE_URL", "https://api.maiarouter.ai/v1").rstrip('/')
                 api_url = f"{base_url}/chat/completions"
                 api_key = os.getenv("OPENAI_API_KEY", "")
@@ -191,9 +107,6 @@ class HuggingFaceService:
                 return result
                 
             else:
-                # ============================================
-                # HUGGINGFACE ROUTER API (Original Models)
-                # ============================================
                 api_url = self.api_url
                 model_name = model_info["name"]
                 logger.debug(f"Using ORIGINAL model: {model_name}")
@@ -230,7 +143,7 @@ class HuggingFaceService:
                     logger.error(f"Error response text: {e.response.text}")
             return None
         except Exception as e:
-            logger.error(f"❌ Unexpected error in query(): {str(e)}")
+            logger.error(f"Unexpected error in query(): {str(e)}")
             return None
     
     def get_completion(self, messages: List[Dict[str, str]], model_id: int = 1, **kwargs) -> Optional[str]:
@@ -264,12 +177,14 @@ PEDOMAN UTAMA:
 2. Gunakan bahasa Indonesia yang mudah dipahami
 3. Berikan informasi yang akurat dan terstruktur
 4. Selalu sarankan konsultasi dengan dokter/tenaga medis profesional
+5. WAJIB sertakan nomor referensi [1], [2], dst. saat mengutip informasi dari konteks dokumen
 
 FORMAT JAWABAN:
 - Untuk pertanyaan tentang penyakit: jelaskan deskripsi, gejala, dan pengobatan yang tersedia
 - Untuk pertanyaan tentang obat: sebutkan jenis obat dan dosis UMUM dari dokumen
 - Untuk pertanyaan tentang gejala: identifikasi kemungkinan penyakit berdasarkan gejala tersebut
-- Selalu sertakan SUMBER informasi (nama penyakit dari data)
+- WAJIB: Sertakan citation [1], [2], [3] dst. sesuai nomor sumber dokumen yang Anda gunakan
+  Contoh: "Paracetamol diberikan 500 mg tiap 4-6 jam [1]."
 
 ATURAN KESELAMATAN MEDIS (WAJIB):
 ⚠️ JANGAN PERNAH:
@@ -311,12 +226,19 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     """
     Mengeksekusi full pipeline RAG Medis dengan Multiple Retrieval Strategies:
     Hybrid Search (BM25 + Dense Retrieval) yang dilanjutkan dengan Re-ranking.
+    
+    Response mencakup:
+    - answer: Jawaban LLM dengan inline citation [1], [2], dst.
+    - sources: List sumber dokumen yang digunakan
+    - citations: Mapping nomor citation ke sumber dokumen
+    - cost: Breakdown biaya per komponen API
+    - confidence: Skor kepercayaan berdasarkan reranker scores
     """
     supabase_table = os.getenv("SUPABASE_TABLE_NAME", "documents")
     
-    # ==========================================
-    # TAHAP 1: DENSE RETRIEVAL (Vector Search)
-    # ==========================================
+
+    # DENSE RETRIEVAL (Vector Search)
+
     vector_store = SupabaseVectorStore(
         client=supabase,
         embedding=embeddings,
@@ -325,13 +247,10 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     )
     dense_retriever = vector_store.as_retriever(search_kwargs={"k": 15})
     
-    # ==========================================
-    # TAHAP 2: BM25 RETRIEVAL (Lexical Search)
-    # ==========================================
+    # BM25 RETRIEVAL (Lexical Search)
     logger.info("Mempersiapkan BM25 Retriever dari Supabase...")
     bm25_retriever = None
     try:
-        # Mengambil semua teks dokumen untuk pencarian keyword exact-match (misal: "ICD-10", "Vitamin B12")
         response = supabase.table(supabase_table).select("content, metadata").execute()
         all_docs = []
         if response.data:
@@ -346,14 +265,12 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     except Exception as e:
         logger.error(f"Gagal memuat dokumen untuk BM25: {str(e)}")
 
-    # ==========================================
-    # TAHAP 3: HYBRID SEARCH (Ensemble)
-    # ==========================================
+    # HYBRID SEARCH (Ensemble)
     logger.info("Tahap 1 & 2: Mengambil dokumen kandidat menggunakan Hybrid Search (BM25 + Dense)...")
     if bm25_retriever:
         ensemble_retriever = EnsembleRetriever(
             retrievers=[bm25_retriever, dense_retriever],
-            weights=[0.5, 0.5] # Bisa diatur sesuai kebutuhan, misal BM25 lebih tinggi jika exact match penting
+            weights=[0.5, 0.5] # BM25 lebih tinggi jika exact match penting
         )
         initial_docs = ensemble_retriever.invoke(query)
     else:
@@ -362,25 +279,41 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
         
     logger.info(f"Berhasil mengambil {len(initial_docs)} dokumen unik dari Hybrid Search.")
     
-    # ==========================================
-    # TAHAP 4: RE-RANKING (Cohere Rerank API)
-    # ==========================================
+    # RE-RANKING (Cohere Rerank API)
     final_k = 5
     logger.info("Tahap 3: Menerapkan metode Re-ranking menggunakan Cohere Rerank API...")
-    reranked_docs = rerank_documents(query=query, documents=initial_docs, top_k=final_k)
+    reranked_docs, relevance_scores = rerank_documents(query=query, documents=initial_docs, top_k=final_k)
     
-    # Ekstrak konteks dan format sumber dokumen dari hasil re-ranking
+    # CONFIDENCE CALIBRATION
+    confidence_result = calculate_confidence(
+        reranker_scores=relevance_scores,
+        num_initial_docs=len(initial_docs),
+        num_final_docs=len(reranked_docs)
+    )
+    confidence_disclaimer = format_confidence_disclaimer(confidence_result.get("confidence_label", "low"))
+    
+    # SOURCE ATTRIBUTION (Numbered Context)
+    #  nomor pada setiap konteks agar LLM bisa cite [1], [2], dst.
     context_texts = []
     sources = []
-    for doc in reranked_docs:
-        context_texts.append(doc.page_content)
+    citations = []
+    for idx, doc in enumerate(reranked_docs):
+        citation_num = idx + 1
+        context_texts.append(f"[{citation_num}] {doc.page_content}")
+        
+        source_name = doc.metadata.get('source', doc.metadata.get('nama_penyakit', 'Unknown'))
+        
         sources.append({"content": doc.page_content, "metadata": doc.metadata})
+        citations.append({
+            "id": f"[{citation_num}]",
+            "source": source_name,
+            "excerpt": doc.page_content[:150] + ("..." if len(doc.page_content) > 150 else ""),
+            "relevance_score": round(relevance_scores[idx], 4) if idx < len(relevance_scores) else None
+        })
         
     context_joined = "\n\n---\n\n".join(context_texts)
 
-    # ==========================================
-    # TAHAP 5: LLM GENERATION
-    # ==========================================
+    # LLM GENERATION
     model_info = AVAILABLE_MODELS.get(model_id, AVAILABLE_MODELS[1])
     logger.info(f"Using Model {model_info['name']} for Generation")
     
@@ -392,8 +325,22 @@ def get_answer_from_rag(query: str, model_id: int = 1) -> dict:
     
     final_answer = answer if answer else "Maaf, terjadi kesalahan saat mencoba menghasilkan jawaban dari model bahasa."
 
+
+    # COST CALCULATION
+    cost_breakdown = calculate_query_cost(
+        query=query,
+        context_texts=[doc.page_content for doc in reranked_docs],
+        answer=final_answer,
+        model_name=model_info["name"],
+        num_reranked_docs=len(initial_docs)
+    )
+
     return {
         "answer": final_answer,
         "sources": sources,
-        "model_used": model_info["name"]
+        "citations": citations,
+        "model_used": model_info["name"],
+        "cost": cost_breakdown,
+        "confidence": confidence_result,
+        "confidence_disclaimer": confidence_disclaimer
     }
