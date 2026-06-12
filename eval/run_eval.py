@@ -7,12 +7,13 @@ from loguru import logger
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.services.ragas_service import ragas_service
+from eval.medical_judge import evaluate_batch_with_judge, get_judge_prompt
 
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
 
 
-def save_results(results: dict, questions: list, answers: list, contexts_list: list, ground_truths: list):
-    """Simpan hasil evaluasi ke folder eval/results dalam format JSON dan TXT."""
+def save_results(results: dict, judge_results: dict, questions: list, answers: list, contexts_list: list, ground_truths: list):
+    """Simpan hasil evaluasi (RAGAS + Medical Judge) ke folder eval/results."""
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -22,7 +23,8 @@ def save_results(results: dict, questions: list, answers: list, contexts_list: l
     full_payload = {
         "timestamp": datetime.now().isoformat(),
         "test_cases": [],
-        "results": results,
+        "ragas_results": results,
+        "medical_judge_results": judge_results,
     }
 
     for i, q in enumerate(questions):
@@ -40,16 +42,20 @@ def save_results(results: dict, questions: list, answers: list, contexts_list: l
 
     lines = []
     lines.append("=" * 60)
-    lines.append("   LAPORAN EVALUASI MEDICAL RAG (RAGAS)")
+    lines.append("   LAPORAN EVALUASI MEDICAL RAG")
     lines.append(f"   Waktu: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("=" * 60)
     lines.append("")
+
+    # ---- RAGAS Section ----
+    lines.append("━" * 60)
+    lines.append("  BAGIAN 1: RAGAS METRICS")
+    lines.append("━" * 60)
 
     if "error" in results:
         lines.append(f"ERROR: {results['error']}")
     else:
         avg = results.get("average_scores", {})
-        lines.append(">> SKOR RATA-RATA")
         lines.append(f"   Faithfulness (Akurasi Faktual) : {avg.get('faithfulness', 0):.4f}")
         lines.append(f"   Context Precision              : {avg.get('context_precision', 0):.4f}")
         lines.append(f"   Answer Relevancy               : {avg.get('answer_relevancy', 0):.4f}")
@@ -59,7 +65,7 @@ def save_results(results: dict, questions: list, answers: list, contexts_list: l
         individual = results.get("individual_scores", [])
         if individual:
             lines.append("-" * 60)
-            lines.append(">> DETAIL PER PERTANYAAN")
+            lines.append(">> DETAIL PER PERTANYAAN (RAGAS)")
             lines.append("-" * 60)
             for idx, score in enumerate(individual):
                 lines.append(f"\n[Test Case {idx + 1}]")
@@ -70,6 +76,33 @@ def save_results(results: dict, questions: list, answers: list, contexts_list: l
                 lines.append(f"  Faithfulness       : {score.get('faithfulness', 0):.4f}")
                 lines.append(f"  Context Precision  : {score.get('context_precision', 0):.4f}")
                 lines.append(f"  Answer Relevancy   : {score.get('answer_relevancy', 0):.4f}")
+
+    # ---- Medical Judge Section ----
+    lines.append("")
+    lines.append("━" * 60)
+    lines.append("  BAGIAN 2: LLM-AS-JUDGE (MEDICAL CRITERIA)")
+    lines.append("━" * 60)
+
+    if judge_results and "error" not in judge_results:
+        agg = judge_results.get("aggregate_scores", {})
+        lines.append(f"   Clinical Accuracy  : {agg.get('clinical_accuracy', 0):.2f} / 5.0")
+        lines.append(f"   Safety Compliance  : {agg.get('safety_compliance', 0):.2f} / 5.0")
+        lines.append(f"   Source Grounding   : {agg.get('source_grounding', 0):.2f} / 5.0")
+        lines.append(f"   Completeness       : {agg.get('completeness', 0):.2f} / 5.0")
+        lines.append(f"   OVERALL            : {agg.get('overall', 0):.2f} / 5.0")
+        lines.append("")
+        lines.append(f"   Judge Model    : {judge_results.get('judge_model', 'N/A')}")
+        lines.append(f"   Bias Check     : {judge_results.get('bias_check_enabled', False)}")
+
+        # Bias validation per case
+        ind_results = judge_results.get("individual_results", [])
+        for idx, ir in enumerate(ind_results):
+            bv = ir.get("bias_validation", {})
+            if bv:
+                lines.append(f"\n   [Case {idx+1}] Reliability: {bv.get('reliability', 'N/A')} "
+                             f"(variance: {bv.get('average_variance', 0):.4f})")
+    else:
+        lines.append("   (Medical Judge evaluation tidak dijalankan atau gagal)")
 
     lines.append("")
     lines.append("=" * 60)
@@ -87,7 +120,7 @@ def save_results(results: dict, questions: list, answers: list, contexts_list: l
 
 
 def run_medical_eval():
-    logger.info("Memulai Evaluasi Framework RAGAS untuk Medical AI...")
+    logger.info("Memulai Evaluasi Framework untuk Medical AI...")
 
     questions = [
         "Berapa dosis paracetamol untuk pasien demam berdarah dengue (DBD)?",
@@ -119,6 +152,13 @@ def run_medical_eval():
         "Salbutamol: 1-2 isapan (puff) saat serangan asma terjadi, maksimal 4 kali sehari."
     ]
 
+    # =====================================================
+    # BAGIAN 1: RAGAS EVALUATION
+    # =====================================================
+    print("\n" + "=" * 60)
+    print("  [1/2] Menjalankan RAGAS Evaluation...")
+    print("=" * 60)
+
     results = ragas_service.evaluate_batch(
         questions=questions,
         answers=answers,
@@ -126,34 +166,58 @@ def run_medical_eval():
         ground_truths=ground_truths
     )
 
-    print("\n" + "=" * 60)
-    print("      HASIL EVALUASI MEDICAL RAG (RAGAS)")
-    print("=" * 60)
-
     if "error" in results:
-        print(f"ERROR: {results['error']}")
+        print(f"RAGAS ERROR: {results['error']}")
     else:
         avg_scores = results.get("average_scores", {})
-        print(f"Rata-rata Faithfulness (Faktual)    : {avg_scores.get('faithfulness', 0):.4f}")
-        print(f"Rata-rata Context Precision         : {avg_scores.get('context_precision', 0):.4f}")
-        print(f"Rata-rata Answer Relevancy          : {avg_scores.get('answer_relevancy', 0):.4f}")
-        print(f"SKOR RATA-RATA KESELURUHAN          : {avg_scores.get('average_score', 0):.4f}")
+        print(f"  Faithfulness      : {avg_scores.get('faithfulness', 0):.4f}")
+        print(f"  Context Precision : {avg_scores.get('context_precision', 0):.4f}")
+        print(f"  Answer Relevancy  : {avg_scores.get('answer_relevancy', 0):.4f}")
+        print(f"  OVERALL           : {avg_scores.get('average_score', 0):.4f}")
 
-        individual = results.get("individual_scores", [])
-        if individual:
-            print("\n" + "-" * 60)
-            print("  DETAIL PER PERTANYAAN:")
-            print("-" * 60)
-            for idx, score in enumerate(individual):
-                print(f"\n  [{idx + 1}] {questions[idx]}")
-                print(f"      Faithfulness      : {score.get('faithfulness', 0):.4f}")
-                print(f"      Context Precision : {score.get('context_precision', 0):.4f}")
-                print(f"      Answer Relevancy  : {score.get('answer_relevancy', 0):.4f}")
-
+    # =====================================================
+    # BAGIAN 2: LLM-AS-JUDGE MEDICAL EVALUATION
+    # =====================================================
+    print("\n" + "=" * 60)
+    print("  [2/2] Menjalankan Medical Judge Evaluation (dengan Bias Check)...")
     print("=" * 60)
+
+    # Flatten contexts untuk judge (join list jadi string)
+    contexts_flat = ["\n".join(ctx) for ctx in contexts_list]
+
+    judge_results = evaluate_batch_with_judge(
+        questions=questions,
+        answers=answers,
+        contexts_list=contexts_flat,
+        ground_truths=ground_truths,
+        with_bias_check=True
+    )
+
+    if "error" not in judge_results:
+        agg = judge_results.get("aggregate_scores", {})
+        print(f"  Clinical Accuracy  : {agg.get('clinical_accuracy', 0):.2f} / 5.0")
+        print(f"  Safety Compliance  : {agg.get('safety_compliance', 0):.2f} / 5.0")
+        print(f"  Source Grounding   : {agg.get('source_grounding', 0):.2f} / 5.0")
+        print(f"  Completeness       : {agg.get('completeness', 0):.2f} / 5.0")
+        print(f"  OVERALL            : {agg.get('overall', 0):.2f} / 5.0")
+
+        # Print bias validation summary
+        for idx, ir in enumerate(judge_results.get("individual_results", [])):
+            bv = ir.get("bias_validation", {})
+            if bv:
+                print(f"\n  [Case {idx+1}] Reliability: {bv.get('reliability', 'N/A')} "
+                      f"(avg variance: {bv.get('average_variance', 0):.4f})")
+    else:
+        print(f"  Judge ERROR: {judge_results.get('error', 'Unknown')}")
+
+    # =====================================================
+    # SAVE ALL RESULTS
+    # =====================================================
+    print("\n" + "=" * 60)
 
     json_path, txt_path = save_results(
         results=results,
+        judge_results=judge_results,
         questions=questions,
         answers=answers,
         contexts_list=contexts_list,
@@ -163,6 +227,12 @@ def run_medical_eval():
     print(f"\nHasil disimpan di:")
     print(f"   JSON : {json_path}")
     print(f"   TXT  : {txt_path}")
+
+    # Print judge prompt untuk transparency
+    print("\n" + "-" * 60)
+    print("  JUDGE PROMPT (untuk transparency/demo):")
+    print("-" * 60)
+    print(get_judge_prompt()[:500] + "...\n")
 
 
 if __name__ == "__main__":
