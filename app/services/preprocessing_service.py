@@ -41,7 +41,7 @@ def extract_and_preprocess_csv(file_path: str):
     preprocessed_documents = []
     
     try:
-        with open(file_path, mode='r', encoding='utf-8') as file:
+        with open(file_path, mode='r', encoding='utf-8-sig') as file:
             reader = csv.DictReader(file)
             
             for row_idx, row in enumerate(reader):
